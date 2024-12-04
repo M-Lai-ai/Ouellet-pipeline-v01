@@ -1,170 +1,69 @@
 import os
+import json
+import numpy as np
+import requests
 from pathlib import Path
 import logging
-import pytesseract
-from pdf2image import convert_from_path
-import numpy as np
-import cv2
-from PIL import Image
-import pypdf
-import requests
 import time
 
-class PDFExtractor:
+class EmbeddingProcessor:
     def __init__(self, input_dir, output_dir, openai_api_key):
         # Configuration des chemins
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Initialisation des listes globales pour tous les fichiers
+        self.all_embeddings = []
+        self.all_metadata = []
+
         # Configuration OpenAI
         self.openai_api_key = openai_api_key
         self.headers = {
             "Authorization": f"Bearer {openai_api_key}",
             "Content-Type": "application/json"
         }
-        
-        # Dossier temporaire
-        self.temp_dir = Path("temp_images")
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Configuration logging
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler('pdf_extraction.log'),
+                logging.FileHandler('embedding_processing.log'),
                 logging.StreamHandler()
             ]
         )
         self.logger = logging.getLogger(__name__)
 
-    def preprocess_image(self, image):
-        """Prétraitement de l'image pour OCR"""
-        if isinstance(image, Image.Image):
-            image = np.array(image)
+    def chunk_text(self, text, chunk_size=400, overlap_size=100):
+        """Découpe le texte en chunks avec un chevauchement."""
+        tokens = text.split(' ')
+        chunks = []
+        for i in range(0, len(tokens), chunk_size - overlap_size):
+            chunk = ' '.join(tokens[i:i + chunk_size])
+            chunks.append(chunk)
+        return chunks
 
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image
-
-        denoised = cv2.fastNlMeansDenoising(gray)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(denoised)
-        binary = cv2.adaptiveThreshold(
-            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 11, 2
-        )
-        return binary
-
-    def extract_text_with_ocr(self, pdf_path):
-        """Extraction texte par OCR"""
-        try:
-            images = convert_from_path(pdf_path)
-            ocr_texts = []
-
-            for i, image in enumerate(images, 1):
-                self.logger.info(f"OCR page {i}/{len(images)}")
-                
-                temp_path = self.temp_dir / f"temp_{i}.png"
-                image.save(temp_path)
-                
-                img = cv2.imread(str(temp_path))
-                processed_img = self.preprocess_image(img)
-                
-                text = pytesseract.image_to_string(
-                    processed_img,
-                    lang='fra+eng',
-                    config='--psm 1'
-                )
-                
-                if len(text.strip()) < 100:
-                    text = pytesseract.image_to_string(
-                        processed_img,
-                        lang='fra+eng',
-                        config='--psm 3 --oem 1'
-                    )
-                
-                ocr_texts.append(text)
-                temp_path.unlink(missing_ok=True)
-
-            return ocr_texts
-        except Exception as e:
-            self.logger.error(f"Erreur OCR: {str(e)}")
-            return None
-
-    def extract_text_with_pypdf(self, pdf_path):
-        """Extraction texte avec PyPDF"""
-        try:
-            text_content = []
-            with open(pdf_path, 'rb') as file:
-                reader = pypdf.PdfReader(file)
-                for page in reader.pages:
-                    text = page.extract_text() or ''
-                    text_content.append(text)
-            return text_content
-        except Exception as e:
-            self.logger.error(f"Erreur PyPDF: {str(e)}")
-            return None
-
-    def process_with_gpt(self, content):
-        """Traitement du contenu avec GPT-4 pour structurer le texte en Markdown"""
+    def get_contextualized_chunk(self, chunk, full_text):
+        """Demande à GPT-4o-mini de contextualiser chaque chunk."""
         system_prompt = {
             "role": "system",
             "content": (
-                "You are an expert analyst for Ouellet Canada. "
-                "Analyze the following content and structure it using this exact format:\n\n"
-                "# [Product Category/Line Name]\n"
-                "- Description: [general product description]\n"
-                "- Application: [product application]\n"
-                "- General Features: [list of general features]\n\n"
-                "## Product Specifications\n"
-                "# [Model Number]\n"
-                "- price: [value in CAD]\n"
-                "- length: [value in ft]\n"
-                "- watts: [value]\n"
-                "- [other specifications]: [value]\n\n"
-                "## Installation Instructions\n"
-                "- [installation instruction 1]\n"
-                "- [installation instruction 2]\n\n"
-                "## Warranty\n"
-                "- [warranty details]\n\n"
-                "Example:\n"
-                "# Câble chauffant à résistance fixe\n"
-                "- Description: Câble chauffant pour déglaçage\n"
-                "- Application: Déglaçage de toitures et gouttières\n"
-                "- General Features:\n"
-                "  - Surgaine PVC\n"
-                "  - Conducteur en cuivre nickelé\n\n"
-                "## Product Specifications\n"
-                "# ORF-R020\n"
-                "- price: 63.00\n"
-                "- length: 20\n"
-                "- watts: 150\n"
-                "- voltage: 120V\n\n"
-                "## Installation Instructions\n"
-                "- Ne jamais couper le câble\n"
-                "- Pour applications extérieures seulement\n\n"
-                "## Warranty\n"
-                "- Garantie de base de 1 an\n\n"
-                "Extract and structure ALL information from the content. Dont skip anything "
-                "Maintain the exact hierarchy and formatting. "
-                "Include all general information, specifications, and additional details. "
-                "Use bullet points for lists. "
-                "Separate sections with blank lines."
+                "You are an expert analyst. The following is an excerpt from a larger document. "
+                "Your task is to provide context to the following section by referencing the content of the entire document. "
+                "Ensure that the context helps understand the chunk more thoroughly."
             )
         }
-
+        user_prompt = {
+            "role": "user",
+            "content": f"Document: {full_text}\n\nChunk: {chunk}\n\nPlease provide context for this chunk."
+        }
         try:
             payload = {
                 "model": "gpt-4o-mini",
-                "messages": [
-                    system_prompt,
-                    {"role": "user", "content": content}
-                ],
-                "temperature": 0,
-                "max_tokens": 5000,
+                "messages": [system_prompt, user_prompt],
+                "temperature": 0.7,
+                "max_tokens": 16000,
                 "top_p": 1,
                 "frequency_penalty": 0,
                 "presence_penalty": 0
@@ -174,84 +73,112 @@ class PDFExtractor:
                 'https://api.openai.com/v1/chat/completions',
                 headers=self.headers,
                 json=payload,
-                timeout=60
+                timeout=30
             )
             response.raise_for_status()
-            processed_content = response.json()['choices'][0]['message']['content']
-            
-            time.sleep(1)
-            
-            return processed_content
+            context = response.json()['choices'][0]['message']['content']
+            return context
         except Exception as e:
-            self.logger.error(f"Erreur GPT: {str(e)}")
+            self.logger.error(f"Erreur lors de la contextualisation du chunk: {str(e)}")
             return None
 
-    def process_pdf(self, pdf_path):
-        """Traitement complet d'un PDF"""
-        document_name = pdf_path.stem
-        
-        self.logger.info(f"Traitement de {pdf_path}")
-        
-        # Extraction de texte (OCR + PyPDF)
-        ocr_texts = self.extract_text_with_ocr(pdf_path) or []
-        pypdf_texts = self.extract_text_with_pypdf(pdf_path) or []
-        
-        # Déterminer le nombre de pages
-        num_pages = max(len(ocr_texts), len(pypdf_texts))
-        
-        # Pour chaque page, combiner OCR et PyPDF
-        for page_num in range(num_pages):
-            self.logger.info(f"Traitement de la page {page_num + 1}")
-            
-            # Combiner les textes des deux méthodes
-            page_text = ""
-            if page_num < len(ocr_texts):
-                page_text += ocr_texts[page_num] + "\n\n"
-            if page_num < len(pypdf_texts):
-                page_text += pypdf_texts[page_num]
-            
-            # Traiter le texte avec GPT
-            processed_content = self.process_with_gpt(page_text)
-            
-            if processed_content:
-                # Sauvegarder le résultat
-                output_file_name = self.output_dir / f"{document_name}_page_{page_num + 1}.txt"
-                try:
-                    with open(output_file_name, 'w', encoding='utf-8') as f:
-                        f.write(f"Document ID: {document_name}\n\n{processed_content}")
-                    self.logger.info(f"Fichier créé: {output_file_name}")
-                except Exception as e:
-                    self.logger.error(f"Erreur sauvegarde page {page_num + 1}: {str(e)}")
-        
-        return True
+    def get_embedding(self, text):
+        """Obtenir l'embedding pour un texte."""
+        try:
+            payload = {
+                "input": text,
+                "model": "text-embedding-ada-002",
+                "encoding_format": "float"
+            }
 
-    def process_all_pdfs(self):
-        """Traitement de tous les PDF"""
-        pdf_files = list(self.input_dir.glob('*.pdf'))
-        total_files = len(pdf_files)
-        
-        self.logger.info(f"Début traitement de {total_files} fichiers")
-        
-        successful = 0
-        for i, pdf_path in enumerate(pdf_files, 1):
-            self.logger.info(f"Fichier {i}/{total_files}: {pdf_path.name}")
-            if self.process_pdf(pdf_path):
-                successful += 1
-            
-            time.sleep(2)
-        
-        self.logger.info(f"Terminé. {successful}/{total_files} fichiers traités")
+            response = requests.post(
+                'https://api.openai.com/v1/embeddings',
+                headers=self.headers,
+                json=payload,
+                timeout=30
+            )
+            response.raise_for_status()
+            embedding = response.json()['data'][0]['embedding']
+            return embedding
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la récupération de l'embedding: {str(e)}")
+            return None
+
+    def process_file(self, txt_file_path):
+        """Processus pour un fichier texte."""
+        self.logger.info(f"Traitement du fichier: {txt_file_path}")
+
+        # Lecture du fichier texte
+        with open(txt_file_path, 'r', encoding='utf-8') as file:
+            full_text = file.read()
+
+        # Découpe du texte en chunks
+        chunks = self.chunk_text(full_text)
+
+        # Traitement de chaque chunk
+        for i, text_raw in enumerate(chunks):
+            # Contextualiser chaque chunk
+            context = self.get_contextualized_chunk(text_raw, full_text)
+            if context:
+                # Créer le texte complet (text_raw + context)
+                text = f"{context}\n\nContext:\n{text_raw}"
+
+                # Récupérer l'embedding pour le texte complet
+                embedding = self.get_embedding(text)
+                if embedding:
+                    self.all_embeddings.append(embedding)
+                    self.all_metadata.append({
+                        "filename": txt_file_path.name,
+                        "chunk_id": i,
+                        "text_raw": text_raw,
+                        "context": context,
+                        "text": text
+                    })
+
+            # Pause pour éviter les limites de taux de l'API
+            time.sleep(1)
+
+    def process_all_files(self):
+        """Processus pour tous les fichiers dans le dossier d'entrée."""
+        txt_files = list(self.input_dir.glob('*.txt'))
+        total_files = len(txt_files)
+
+        self.logger.info(f"Début du traitement de {total_files} fichiers")
+
+        for i, txt_file_path in enumerate(txt_files, 1):
+            self.logger.info(f"Traitement du fichier {i}/{total_files}: {txt_file_path.name}")
+            self.process_file(txt_file_path)
+
+        # Sauvegarde de tous les résultats à la fin
+        if self.all_embeddings:
+            # Sauvegarde du fichier JSON unique
+            chunks_json_path = self.output_dir / "chunks.json"
+            with open(chunks_json_path, 'w', encoding='utf-8') as json_file:
+                json.dump({
+                    "metadata": self.all_metadata
+                }, json_file, ensure_ascii=False, indent=4)
+            self.logger.info(f"Fichier JSON créé: {chunks_json_path}")
+
+            # Sauvegarde du fichier .npy unique
+            embeddings_npy_path = self.output_dir / "embeddings.npy"
+            np.save(embeddings_npy_path, np.array(self.all_embeddings))
+            self.logger.info(f"Fichier NPY créé: {embeddings_npy_path}")
+
+        self.logger.info("Traitement terminé")
 
 def main():
     # Configuration
     input_directory = "input"
     output_directory = "output"
     openai_api_key = "votre-cle-api"
-    
+
     try:
-        extractor = PDFExtractor(input_directory, output_directory, openai_api_key)
-        extractor.process_all_pdfs()
-        
+        # Création du processeur
+        processor = EmbeddingProcessor(input_directory, output_directory, openai_api_key)
+
+        # Traitement des fichiers
+        processor.process_all_files()
+
     except Exception as e:
         logging.error(f"Erreur principale: {str(e)}")
         raise

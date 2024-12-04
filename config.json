@@ -1,0 +1,55 @@
+{
+    "excluded_paths": [
+        "selecteur-de-produits",
+        "login",
+        "cart",
+        "search"
+    ],
+    "downloadable_extensions": {
+        "PDF": [".pdf"],
+        "Image": [".png", ".jpg", ".jpeg", ".gif", ".svg"],
+        "Doc": [".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"]
+    },
+    "content_type_mapping": {
+        "PDF": {
+            "application/pdf": ".pdf"
+        },
+        "Image": {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/svg+xml": ".svg"
+        },
+        "Doc": {
+            "application/msword": ".doc",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+            "application/vnd.ms-excel": ".xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+            "application/vnd.ms-powerpoint": ".ppt",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx"
+        }
+    },
+    "retry_config": {
+        "total": 5,
+        "backoff_factor": 1,
+        "status_forcelist": [429, 500, 502, 503, 504]
+    },
+    "crawler_options": {
+        "max_depth": 1,
+        "delay_between_requests": 1,
+        "timeout": 30,
+        "verify_ssl": false
+    },
+    "pdf_options": {
+        "ocr_enabled": true,
+        "ocr_language": "fra+eng",
+        "chunk_size": 5000,
+        "overlap_size": 500
+    },
+    "embedding_options": {
+        "chunk_size": 400,
+        "overlap_size": 100,
+        "batch_size": 50,
+        "model": "text-embedding-ada-002"
+    }
+}

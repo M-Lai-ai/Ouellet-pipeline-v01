@@ -2,7 +2,11 @@
 [![Description de l'image](https://raw.githubusercontent.com/M-Lai-ai/logo/refs/heads/main/favicon.ico)](https://votre-lien-cible.com)
 
 *Pour Jeff dans le cadre de la modification du pipeline CHATBOT OUELLET*
-
+**dans le code tu as les 3 processus integres: 
+1. Crawling + pdf download
+2. PDF extraction with optical caracter recognition + llm Restructuration
+3. Contextual embedding processes
+4. 
 ![GitHub Repo stars](https://img.shields.io/github/stars/M-Lai-ai/Ouellet-pipeline-v01.svg?style=social&label=Stars) ![GitHub issues](https://img.shields.io/github/issues/M-Lai-ai/Ouellet-pipeline-v01.svg)
 
 ## Table des Matières
